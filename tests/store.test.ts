@@ -106,6 +106,23 @@ describe("usage store", () => {
     });
   });
 
+  it("creates zero-progress official quota rows from plan visible models", async () => {
+    const store = new UsageStore(new MemoryStorage());
+
+    await store.applyParsed({
+      plan: { planName: "Free", accountStatus: "active" },
+      models: ["gpt-5.5"]
+    });
+
+    const state = await store.getState();
+    expect(state.usages["gpt-5.5"]).toMatchObject({
+      used: 0,
+      limit: 10,
+      remaining: 10,
+      limitLabel: "5 小时"
+    });
+  });
+
   it("clears persisted state", async () => {
     const store = new UsageStore(new MemoryStorage());
 

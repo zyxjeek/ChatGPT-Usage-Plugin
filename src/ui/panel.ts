@@ -1,5 +1,4 @@
 import styles from "../styles.css?inline";
-import { OFFICIAL_USAGE_LIMITS } from "../data/officialLimits";
 import type { ModelUsage, UsageState } from "../types";
 import { escapeHtml, formatTime } from "../utils/dom";
 import type { UsageStore } from "../store/usageStore";
@@ -77,16 +76,6 @@ export class UsagePanel {
             ${usages.length ? usages.map((usage) => this.renderUsage(usage)).join("") : this.renderEmpty()}
           </section>
           <section class="cgum-section">
-            <div class="cgum-section-title">官方限制参考</div>
-            <div class="cgum-limits">${OFFICIAL_USAGE_LIMITS.map((limit) => `
-              <div class="cgum-limit">
-                <strong>${escapeHtml(limit.displayPlan)} · ${escapeHtml(limit.displayModel)}</strong>
-                <span>${limit.limit === null ? "无限制" : `${limit.limit} 条 / ${limit.windowLabel}`}</span>
-              </div>
-            `).join("")}</div>
-            <a class="cgum-source" href="https://help.openai.com/zh-hans-cn/articles/11909943-gpt-55-in-chatgpt" target="_blank" rel="noreferrer">来源：OpenAI Help Center</a>
-          </section>
-          <section class="cgum-section">
             <div class="cgum-section-title">最近请求</div>
             ${recent.length ? `<div class="cgum-recent">${recent.map((record) => `
               <div class="cgum-record">
@@ -110,19 +99,20 @@ export class UsagePanel {
   private renderUsage(usage: ModelUsage): string {
     const hasLimit = usage.limit !== null && usage.limit > 0;
     const percentage = hasLimit ? Math.min(100, Math.round((usage.used / usage.limit!) * 100)) : 0;
-    const remaining = usage.remaining === null ? "剩余额度未知" : `约剩 ${usage.remaining}`;
+    const quota = usage.limit === null ? "无限制" : `${usage.used} / ${usage.limit}`;
+    const remaining = usage.remaining === null ? "无限制或未知" : `剩余 ${usage.remaining}`;
     const windowLabel = usage.limitLabel ?? "当前周期";
 
     return `
       <div class="cgum-model">
         <div class="cgum-model-row">
           <div class="cgum-model-name" title="${escapeHtml(usage.model)}">${escapeHtml(usage.model)}</div>
-          <div class="cgum-model-count">观察到 ${usage.used} 次</div>
+          <div class="cgum-model-count">${escapeHtml(quota)}</div>
         </div>
         <div class="cgum-bar" aria-hidden="true"><div class="cgum-bar-fill" style="--value: ${percentage}%"></div></div>
         <div class="cgum-meta">
           <span>${escapeHtml(remaining)}</span>
-          <span>${escapeHtml(windowLabel)} · 重置 ${formatTime(usage.windowEnd)}</span>
+          <span>${escapeHtml(windowLabel)}${usage.windowEnd ? ` · 重置 ${formatTime(usage.windowEnd)}` : ""}</span>
         </div>
       </div>
     `;

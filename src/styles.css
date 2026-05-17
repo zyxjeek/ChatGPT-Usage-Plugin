@@ -205,42 +205,6 @@
   gap: 6px;
 }
 
-.cgum-limits {
-  display: grid;
-  gap: 6px;
-}
-
-.cgum-limit {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px;
-  border-radius: 8px;
-  background: var(--cgum-panel);
-  font-size: 12px;
-}
-
-.cgum-limit strong {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cgum-limit span {
-  color: var(--cgum-muted);
-  white-space: nowrap;
-}
-
-.cgum-source {
-  display: inline-block;
-  margin-top: 7px;
-  color: var(--cgum-muted);
-  font-size: 11px;
-  text-decoration: none;
-}
-
 .cgum-record {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -282,7 +246,6 @@
 }
 
 .cgum-compact .cgum-recent,
-.cgum-compact .cgum-limits,
 .cgum-compact .cgum-privacy,
 .cgum-compact .cgum-meta {
   display: none;

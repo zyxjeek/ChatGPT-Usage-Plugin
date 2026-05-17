@@ -122,17 +122,23 @@ export class UsageStore extends EventTarget {
         source: "official",
         updatedAt: now
       };
+
+      for (const model of state.plan.visibleModels) {
+        const key = normalizeModelName(model);
+        state.usages[key] = applyPlanLimit(state.usages[key] ?? createUsage(key, now, state.plan.planName), now, state.plan.planName);
+      }
     }
 
     for (const limit of parsed.limits ?? []) {
       const key = normalizeModelName(limit.model);
       const existing = state.usages[key] ?? createUsage(key, now, state.plan?.planName);
+      const withPlanLimit = applyPlanLimit(existing, now, state.plan?.planName);
       state.usages[key] = {
-        ...existing,
-        remaining: limit.remaining ?? existing.remaining,
-        limit: limit.limit ?? existing.limit,
-        limitLabel: existing.limitLabel,
-        windowEnd: limit.windowEnd ?? existing.windowEnd,
+        ...withPlanLimit,
+        remaining: limit.remaining ?? withPlanLimit.remaining,
+        limit: limit.limit ?? withPlanLimit.limit,
+        limitLabel: withPlanLimit.limitLabel,
+        windowEnd: limit.windowEnd ?? withPlanLimit.windowEnd,
         source: "official"
       };
     }
@@ -245,6 +251,27 @@ function rolloverIfNeeded(usage: ModelUsage, now: number, planName?: string | nu
     remaining: fresh.limit ?? usage.limit,
     limitLabel: fresh.limitLabel ?? usage.limitLabel,
     source: usage.source
+  };
+}
+
+function applyPlanLimit(usage: ModelUsage, now: number, planName?: string | null): ModelUsage {
+  const officialLimit = findOfficialLimit(usage.model, planName);
+  if (!officialLimit) {
+    return usage;
+  }
+
+  const windowStart = officialLimit.windowMs ? alignRollingWindow(now, officialLimit.windowMs) : usage.windowStart;
+  const windowEnd = officialLimit.windowMs ? windowStart + officialLimit.windowMs : null;
+  const isSameWindow = usage.windowStart === windowStart || officialLimit.windowMs === null;
+
+  return {
+    ...usage,
+    used: isSameWindow ? usage.used : 0,
+    remaining: officialLimit.limit === null ? null : Math.max(officialLimit.limit - (isSameWindow ? usage.used : 0), 0),
+    limit: officialLimit.limit,
+    limitLabel: officialLimit.windowLabel,
+    windowStart,
+    windowEnd
   };
 }
 

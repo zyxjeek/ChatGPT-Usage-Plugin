@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Usage Monitor
 // @namespace    https://github.com/local/chatgpt-usage-userscript
-// @version      0.1.1
+// @version      0.1.2
 // @description  Show local and officially observed ChatGPT subscription/model usage metadata without storing conversation content.
 // @author       local
 // @match        https://chatgpt.com/*
@@ -579,26 +579,32 @@
 		async applyParsed(parsed) {
 			const state = await this.load();
 			const now = Date.now();
-			if (parsed.plan || parsed.models?.length) state.plan = {
-				planName: parsed.plan?.planName ?? state.plan?.planName ?? null,
-				accountStatus: parsed.plan?.accountStatus ?? state.plan?.accountStatus ?? null,
-				visibleModels: dedupe([
-					...parsed.models ?? [],
-					...parsed.plan?.visibleModels ?? [],
-					...state.plan?.visibleModels ?? []
-				]),
-				source: "official",
-				updatedAt: now
-			};
+			if (parsed.plan || parsed.models?.length) {
+				state.plan = {
+					planName: parsed.plan?.planName ?? state.plan?.planName ?? null,
+					accountStatus: parsed.plan?.accountStatus ?? state.plan?.accountStatus ?? null,
+					visibleModels: dedupe([
+						...parsed.models ?? [],
+						...parsed.plan?.visibleModels ?? [],
+						...state.plan?.visibleModels ?? []
+					]),
+					source: "official",
+					updatedAt: now
+				};
+				for (const model of state.plan.visibleModels) {
+					const key = normalizeModelName(model);
+					state.usages[key] = applyPlanLimit(state.usages[key] ?? createUsage(key, now, state.plan.planName), now, state.plan.planName);
+				}
+			}
 			for (const limit of parsed.limits ?? []) {
 				const key = normalizeModelName(limit.model);
-				const existing = state.usages[key] ?? createUsage(key, now, state.plan?.planName);
+				const withPlanLimit = applyPlanLimit(state.usages[key] ?? createUsage(key, now, state.plan?.planName), now, state.plan?.planName);
 				state.usages[key] = {
-					...existing,
-					remaining: limit.remaining ?? existing.remaining,
-					limit: limit.limit ?? existing.limit,
-					limitLabel: existing.limitLabel,
-					windowEnd: limit.windowEnd ?? existing.windowEnd,
+					...withPlanLimit,
+					remaining: limit.remaining ?? withPlanLimit.remaining,
+					limit: limit.limit ?? withPlanLimit.limit,
+					limitLabel: withPlanLimit.limitLabel,
+					windowEnd: limit.windowEnd ?? withPlanLimit.windowEnd,
 					source: "official"
 				};
 			}
@@ -688,6 +694,22 @@
 			source: usage.source
 		};
 	}
+	function applyPlanLimit(usage, now, planName) {
+		const officialLimit = findOfficialLimit(usage.model, planName);
+		if (!officialLimit) return usage;
+		const windowStart = officialLimit.windowMs ? alignRollingWindow(now, officialLimit.windowMs) : usage.windowStart;
+		const windowEnd = officialLimit.windowMs ? windowStart + officialLimit.windowMs : null;
+		const isSameWindow = usage.windowStart === windowStart || officialLimit.windowMs === null;
+		return {
+			...usage,
+			used: isSameWindow ? usage.used : 0,
+			remaining: officialLimit.limit === null ? null : Math.max(officialLimit.limit - (isSameWindow ? usage.used : 0), 0),
+			limit: officialLimit.limit,
+			limitLabel: officialLimit.windowLabel,
+			windowStart,
+			windowEnd
+		};
+	}
 	function startOfLocalDay(timestamp) {
 		const date = new Date(timestamp);
 		date.setHours(0, 0, 0, 0);
@@ -704,7 +726,7 @@
 	}
 	//#endregion
 	//#region src/styles.css?inline
-	var styles_default = ":host {\n  color-scheme: light dark;\n  --cgum-bg: light-dark(#ffffff, #1f1f1f);\n  --cgum-panel: light-dark(#f7f7f5, #2a2a2a);\n  --cgum-text: light-dark(#202123, #ececf1);\n  --cgum-muted: light-dark(#6b6f76, #a7a7a7);\n  --cgum-border: light-dark(#deded8, #3f3f46);\n  --cgum-accent: #10a37f;\n  --cgum-warning: #d9822b;\n  --cgum-danger: #d14343;\n  --cgum-shadow: 0 18px 50px rgb(0 0 0 / 18%);\n  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;\n}\n\n.cgum-root {\n  position: fixed;\n  right: 18px;\n  bottom: 18px;\n  z-index: 2147483647;\n  color: var(--cgum-text);\n}\n\n.cgum-button,\n.cgum-icon-button,\n.cgum-action {\n  border: 1px solid var(--cgum-border);\n  background: var(--cgum-bg);\n  color: var(--cgum-text);\n  cursor: pointer;\n  font: inherit;\n}\n\n.cgum-button {\n  width: 46px;\n  height: 46px;\n  display: grid;\n  place-items: center;\n  border-radius: 999px;\n  box-shadow: var(--cgum-shadow);\n  font-weight: 700;\n}\n\n.cgum-panel {\n  width: min(380px, calc(100vw - 28px));\n  max-height: min(620px, calc(100vh - 48px));\n  overflow: auto;\n  border: 1px solid var(--cgum-border);\n  border-radius: 8px;\n  background: var(--cgum-bg);\n  box-shadow: var(--cgum-shadow);\n}\n\n.cgum-hidden {\n  display: none;\n}\n\n.cgum-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  padding: 14px 14px 10px;\n  border-bottom: 1px solid var(--cgum-border);\n}\n\n.cgum-title {\n  margin: 0;\n  font-size: 15px;\n  line-height: 1.25;\n}\n\n.cgum-subtitle {\n  margin: 2px 0 0;\n  color: var(--cgum-muted);\n  font-size: 12px;\n}\n\n.cgum-tools {\n  display: flex;\n  gap: 6px;\n}\n\n.cgum-icon-button {\n  width: 30px;\n  height: 30px;\n  display: grid;\n  place-items: center;\n  border-radius: 6px;\n  font-size: 14px;\n}\n\n.cgum-icon-button[aria-pressed=\"true\"] {\n  border-color: color-mix(in srgb, var(--cgum-accent) 55%, var(--cgum-border));\n  color: var(--cgum-accent);\n}\n\n.cgum-body {\n  padding: 12px 14px 14px;\n}\n\n.cgum-section + .cgum-section {\n  margin-top: 14px;\n}\n\n.cgum-section-title {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 8px;\n  color: var(--cgum-muted);\n  font-size: 12px;\n  font-weight: 700;\n  text-transform: uppercase;\n}\n\n.cgum-plan {\n  display: grid;\n  grid-template-columns: 1fr auto;\n  gap: 8px;\n  padding: 10px;\n  border-radius: 8px;\n  background: var(--cgum-panel);\n}\n\n.cgum-plan strong {\n  display: block;\n  font-size: 14px;\n}\n\n.cgum-pill {\n  align-self: start;\n  padding: 3px 7px;\n  border: 1px solid var(--cgum-border);\n  border-radius: 999px;\n  color: var(--cgum-muted);\n  font-size: 11px;\n}\n\n.cgum-model {\n  padding: 10px 0;\n  border-bottom: 1px solid var(--cgum-border);\n}\n\n.cgum-model:last-child {\n  border-bottom: 0;\n}\n\n.cgum-model-row {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  margin-bottom: 7px;\n}\n\n.cgum-model-name {\n  min-width: 0;\n  overflow: hidden;\n  font-size: 14px;\n  font-weight: 650;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.cgum-model-count {\n  color: var(--cgum-muted);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cgum-bar {\n  height: 7px;\n  overflow: hidden;\n  border-radius: 999px;\n  background: color-mix(in srgb, var(--cgum-muted) 18%, transparent);\n}\n\n.cgum-bar-fill {\n  width: var(--value, 0%);\n  height: 100%;\n  border-radius: inherit;\n  background: var(--cgum-accent);\n}\n\n.cgum-meta {\n  display: flex;\n  justify-content: space-between;\n  gap: 12px;\n  margin-top: 6px;\n  color: var(--cgum-muted);\n  font-size: 11px;\n}\n\n.cgum-empty {\n  padding: 14px 10px;\n  border-radius: 8px;\n  background: var(--cgum-panel);\n  color: var(--cgum-muted);\n  font-size: 13px;\n  line-height: 1.45;\n}\n\n.cgum-recent {\n  display: grid;\n  gap: 6px;\n}\n\n.cgum-limits {\n  display: grid;\n  gap: 6px;\n}\n\n.cgum-limit {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  padding: 8px;\n  border-radius: 8px;\n  background: var(--cgum-panel);\n  font-size: 12px;\n}\n\n.cgum-limit strong {\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.cgum-limit span {\n  color: var(--cgum-muted);\n  white-space: nowrap;\n}\n\n.cgum-source {\n  display: inline-block;\n  margin-top: 7px;\n  color: var(--cgum-muted);\n  font-size: 11px;\n  text-decoration: none;\n}\n\n.cgum-record {\n  display: grid;\n  grid-template-columns: 1fr auto;\n  gap: 6px 12px;\n  padding: 8px;\n  border-radius: 8px;\n  background: var(--cgum-panel);\n  font-size: 12px;\n}\n\n.cgum-record span {\n  color: var(--cgum-muted);\n}\n\n.cgum-record-ok {\n  color: var(--cgum-accent);\n}\n\n.cgum-record-fail {\n  color: var(--cgum-danger);\n}\n\n.cgum-actions {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  gap: 8px;\n}\n\n.cgum-action {\n  min-height: 34px;\n  border-radius: 6px;\n  font-size: 12px;\n}\n\n.cgum-privacy {\n  color: var(--cgum-muted);\n  font-size: 11px;\n  line-height: 1.45;\n}\n\n.cgum-compact .cgum-recent,\n.cgum-compact .cgum-limits,\n.cgum-compact .cgum-privacy,\n.cgum-compact .cgum-meta {\n  display: none;\n}\n\n@media (max-width: 520px) {\n  .cgum-root {\n    right: 10px;\n    bottom: 10px;\n  }\n\n  .cgum-panel {\n    width: calc(100vw - 20px);\n  }\n}\n";
+	var styles_default = ":host {\n  color-scheme: light dark;\n  --cgum-bg: light-dark(#ffffff, #1f1f1f);\n  --cgum-panel: light-dark(#f7f7f5, #2a2a2a);\n  --cgum-text: light-dark(#202123, #ececf1);\n  --cgum-muted: light-dark(#6b6f76, #a7a7a7);\n  --cgum-border: light-dark(#deded8, #3f3f46);\n  --cgum-accent: #10a37f;\n  --cgum-warning: #d9822b;\n  --cgum-danger: #d14343;\n  --cgum-shadow: 0 18px 50px rgb(0 0 0 / 18%);\n  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;\n}\n\n.cgum-root {\n  position: fixed;\n  right: 18px;\n  bottom: 18px;\n  z-index: 2147483647;\n  color: var(--cgum-text);\n}\n\n.cgum-button,\n.cgum-icon-button,\n.cgum-action {\n  border: 1px solid var(--cgum-border);\n  background: var(--cgum-bg);\n  color: var(--cgum-text);\n  cursor: pointer;\n  font: inherit;\n}\n\n.cgum-button {\n  width: 46px;\n  height: 46px;\n  display: grid;\n  place-items: center;\n  border-radius: 999px;\n  box-shadow: var(--cgum-shadow);\n  font-weight: 700;\n}\n\n.cgum-panel {\n  width: min(380px, calc(100vw - 28px));\n  max-height: min(620px, calc(100vh - 48px));\n  overflow: auto;\n  border: 1px solid var(--cgum-border);\n  border-radius: 8px;\n  background: var(--cgum-bg);\n  box-shadow: var(--cgum-shadow);\n}\n\n.cgum-hidden {\n  display: none;\n}\n\n.cgum-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n  padding: 14px 14px 10px;\n  border-bottom: 1px solid var(--cgum-border);\n}\n\n.cgum-title {\n  margin: 0;\n  font-size: 15px;\n  line-height: 1.25;\n}\n\n.cgum-subtitle {\n  margin: 2px 0 0;\n  color: var(--cgum-muted);\n  font-size: 12px;\n}\n\n.cgum-tools {\n  display: flex;\n  gap: 6px;\n}\n\n.cgum-icon-button {\n  width: 30px;\n  height: 30px;\n  display: grid;\n  place-items: center;\n  border-radius: 6px;\n  font-size: 14px;\n}\n\n.cgum-icon-button[aria-pressed=\"true\"] {\n  border-color: color-mix(in srgb, var(--cgum-accent) 55%, var(--cgum-border));\n  color: var(--cgum-accent);\n}\n\n.cgum-body {\n  padding: 12px 14px 14px;\n}\n\n.cgum-section + .cgum-section {\n  margin-top: 14px;\n}\n\n.cgum-section-title {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 8px;\n  color: var(--cgum-muted);\n  font-size: 12px;\n  font-weight: 700;\n  text-transform: uppercase;\n}\n\n.cgum-plan {\n  display: grid;\n  grid-template-columns: 1fr auto;\n  gap: 8px;\n  padding: 10px;\n  border-radius: 8px;\n  background: var(--cgum-panel);\n}\n\n.cgum-plan strong {\n  display: block;\n  font-size: 14px;\n}\n\n.cgum-pill {\n  align-self: start;\n  padding: 3px 7px;\n  border: 1px solid var(--cgum-border);\n  border-radius: 999px;\n  color: var(--cgum-muted);\n  font-size: 11px;\n}\n\n.cgum-model {\n  padding: 10px 0;\n  border-bottom: 1px solid var(--cgum-border);\n}\n\n.cgum-model:last-child {\n  border-bottom: 0;\n}\n\n.cgum-model-row {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 10px;\n  margin-bottom: 7px;\n}\n\n.cgum-model-name {\n  min-width: 0;\n  overflow: hidden;\n  font-size: 14px;\n  font-weight: 650;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.cgum-model-count {\n  color: var(--cgum-muted);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cgum-bar {\n  height: 7px;\n  overflow: hidden;\n  border-radius: 999px;\n  background: color-mix(in srgb, var(--cgum-muted) 18%, transparent);\n}\n\n.cgum-bar-fill {\n  width: var(--value, 0%);\n  height: 100%;\n  border-radius: inherit;\n  background: var(--cgum-accent);\n}\n\n.cgum-meta {\n  display: flex;\n  justify-content: space-between;\n  gap: 12px;\n  margin-top: 6px;\n  color: var(--cgum-muted);\n  font-size: 11px;\n}\n\n.cgum-empty {\n  padding: 14px 10px;\n  border-radius: 8px;\n  background: var(--cgum-panel);\n  color: var(--cgum-muted);\n  font-size: 13px;\n  line-height: 1.45;\n}\n\n.cgum-recent {\n  display: grid;\n  gap: 6px;\n}\n\n.cgum-record {\n  display: grid;\n  grid-template-columns: 1fr auto;\n  gap: 6px 12px;\n  padding: 8px;\n  border-radius: 8px;\n  background: var(--cgum-panel);\n  font-size: 12px;\n}\n\n.cgum-record span {\n  color: var(--cgum-muted);\n}\n\n.cgum-record-ok {\n  color: var(--cgum-accent);\n}\n\n.cgum-record-fail {\n  color: var(--cgum-danger);\n}\n\n.cgum-actions {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  gap: 8px;\n}\n\n.cgum-action {\n  min-height: 34px;\n  border-radius: 6px;\n  font-size: 12px;\n}\n\n.cgum-privacy {\n  color: var(--cgum-muted);\n  font-size: 11px;\n  line-height: 1.45;\n}\n\n.cgum-compact .cgum-recent,\n.cgum-compact .cgum-privacy,\n.cgum-compact .cgum-meta {\n  display: none;\n}\n\n@media (max-width: 520px) {\n  .cgum-root {\n    right: 10px;\n    bottom: 10px;\n  }\n\n  .cgum-panel {\n    width: calc(100vw - 20px);\n  }\n}\n";
 	//#endregion
 	//#region src/utils/dom.ts
 	function onReady(callback) {
@@ -799,16 +821,6 @@
             ${usages.length ? usages.map((usage) => this.renderUsage(usage)).join("") : this.renderEmpty()}
           </section>
           <section class="cgum-section">
-            <div class="cgum-section-title">官方限制参考</div>
-            <div class="cgum-limits">${OFFICIAL_USAGE_LIMITS.map((limit) => `
-              <div class="cgum-limit">
-                <strong>${escapeHtml(limit.displayPlan)} · ${escapeHtml(limit.displayModel)}</strong>
-                <span>${limit.limit === null ? "无限制" : `${limit.limit} 条 / ${limit.windowLabel}`}</span>
-              </div>
-            `).join("")}</div>
-            <a class="cgum-source" href="https://help.openai.com/zh-hans-cn/articles/11909943-gpt-55-in-chatgpt" target="_blank" rel="noreferrer">来源：OpenAI Help Center</a>
-          </section>
-          <section class="cgum-section">
             <div class="cgum-section-title">最近请求</div>
             ${recent.length ? `<div class="cgum-recent">${recent.map((record) => `
               <div class="cgum-record">
@@ -830,18 +842,19 @@
 		}
 		renderUsage(usage) {
 			const percentage = usage.limit !== null && usage.limit > 0 ? Math.min(100, Math.round(usage.used / usage.limit * 100)) : 0;
-			const remaining = usage.remaining === null ? "剩余额度未知" : `约剩 ${usage.remaining}`;
+			const quota = usage.limit === null ? "无限制" : `${usage.used} / ${usage.limit}`;
+			const remaining = usage.remaining === null ? "无限制或未知" : `剩余 ${usage.remaining}`;
 			const windowLabel = usage.limitLabel ?? "当前周期";
 			return `
       <div class="cgum-model">
         <div class="cgum-model-row">
           <div class="cgum-model-name" title="${escapeHtml(usage.model)}">${escapeHtml(usage.model)}</div>
-          <div class="cgum-model-count">观察到 ${usage.used} 次</div>
+          <div class="cgum-model-count">${escapeHtml(quota)}</div>
         </div>
         <div class="cgum-bar" aria-hidden="true"><div class="cgum-bar-fill" style="--value: ${percentage}%"></div></div>
         <div class="cgum-meta">
           <span>${escapeHtml(remaining)}</span>
-          <span>${escapeHtml(windowLabel)} · 重置 ${formatTime(usage.windowEnd)}</span>
+          <span>${escapeHtml(windowLabel)}${usage.windowEnd ? ` · 重置 ${formatTime(usage.windowEnd)}` : ""}</span>
         </div>
       </div>
     `;
