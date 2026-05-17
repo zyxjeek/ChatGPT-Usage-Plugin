@@ -24,15 +24,17 @@ describe("chatgpt parser", () => {
         account_plan: "Plus",
         account_status: "active",
         models: [
-          { slug: "gpt-4o", message_cap: 80, remaining_messages: 42, resets_at: "2030-01-01T00:00:00Z" },
+          { slug: "gpt-5.5", message_cap: 160, remaining_messages: 42, resets_at: "2030-01-01T00:00:00Z" },
+          { slug: "gpt-5-5-thinking" },
+          { slug: "gpt-4o" },
           { slug: "o3-mini" }
         ]
       }
     });
 
     expect(parsed?.plan?.planName).toBe("Plus");
-    expect(parsed?.models).toEqual(["gpt-4o", "o3-mini"]);
-    expect(parsed?.limits?.[0]).toMatchObject({ model: "gpt-4o", limit: 80, remaining: 42 });
+    expect(parsed?.models).toEqual(["gpt-5.5", "gpt-5.5 thinking"]);
+    expect(parsed?.limits?.[0]).toMatchObject({ model: "gpt-5.5", limit: 160, remaining: 42 });
   });
 
   it("ignores unrelated same-origin responses", () => {

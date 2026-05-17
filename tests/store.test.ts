@@ -18,7 +18,7 @@ class MemoryStorage implements KeyValueStorage {
 }
 
 describe("usage store", () => {
-  it("increments successful observed message requests by model", async () => {
+  it("increments successful observed message requests for tracked models", async () => {
     const store = new UsageStore(new MemoryStorage());
 
     await store.applyParsed({
@@ -27,15 +27,35 @@ describe("usage store", () => {
         method: "POST",
         status: 200,
         ok: true,
-        model: "GPT-4o",
+        model: "GPT-5.5",
         type: "message",
         source: "observed"
       }
     });
 
     const state = await store.getState();
-    expect(state.usages["gpt-4o"].used).toBe(1);
+    expect(state.usages["gpt-5.5"].used).toBe(1);
     expect(state.recent).toHaveLength(1);
+  });
+
+  it("ignores non-main models", async () => {
+    const store = new UsageStore(new MemoryStorage());
+
+    await store.applyParsed({
+      request: {
+        endpoint: "/backend-api/conversation",
+        method: "POST",
+        status: 200,
+        ok: true,
+        model: "gpt-4o",
+        type: "message",
+        source: "observed"
+      }
+    });
+
+    const state = await store.getState();
+    expect(state.usages["gpt-4o"]).toBeUndefined();
+    expect(Object.keys(state.usages)).toHaveLength(0);
   });
 
   it("does not increment failed message requests", async () => {

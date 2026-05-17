@@ -9,6 +9,7 @@ export interface InterceptorOptions {
 }
 
 type BrowserGlobal = Window & typeof globalThis;
+type RequestMeta = NonNullable<ObservedResponse["requestMeta"]>;
 
 export function installInterceptors(options: InterceptorOptions): () => void {
   const targetWindow = getPatchWindow();
@@ -27,10 +28,11 @@ function installFetchInterceptor(targetWindow: BrowserGlobal, options: Intercept
   targetWindow.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = getFetchUrl(input);
     const method = getFetchMethod(input, init);
-    const requestMeta = extractRequestMeta(init?.body ?? null);
+    const requestMetaPromise = extractFetchRequestMeta(input, init, targetWindow);
     const response = await originalFetch.call(targetWindow, input, init);
 
     if (isChatGPTSameOrigin(url)) {
+      const requestMeta = await requestMetaPromise;
       observeResponse({
         url,
         method,
@@ -181,6 +183,38 @@ function getFetchMethod(input: RequestInfo | URL, init?: RequestInit): string {
     return input.method.toUpperCase();
   }
   return "GET";
+}
+
+async function extractFetchRequestMeta(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  targetWindow: BrowserGlobal
+): Promise<RequestMeta> {
+  const initMeta = extractRequestMeta(init?.body ?? null) ?? { bodyKind: "none", model: null };
+  if (initMeta.model) {
+    return initMeta;
+  }
+
+  if (!isRequestLike(input, targetWindow)) {
+    return initMeta;
+  }
+
+  try {
+    const clone = input.clone();
+    const contentType = clone.headers.get("content-type") ?? "";
+    const text = await clone.text();
+    const meta = extractRequestMeta(text) ?? { bodyKind: "unknown", model: null };
+    return {
+      ...meta,
+      bodyKind: contentType.includes("json") ? "json" : meta.bodyKind
+    };
+  } catch {
+    return initMeta;
+  }
+}
+
+function isRequestLike(input: RequestInfo | URL, targetWindow: BrowserGlobal): input is Request {
+  return typeof targetWindow.Request === "function" && input instanceof targetWindow.Request;
 }
 
 function getPatchWindow(): BrowserGlobal {

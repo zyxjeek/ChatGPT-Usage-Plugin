@@ -1,8 +1,18 @@
 import type { ObservedResponse, ParsedChatGPTResponse, RequestRecord } from "../types";
+import { canonicalTrackedModel, isTrackedModel } from "../models/trackedModels";
 
 const CHATGPT_HOSTS = new Set(["chatgpt.com", "chat.openai.com"]);
 
-const MODEL_KEYS = new Set(["model", "model_slug", "slug", "default_model_slug"]);
+const MODEL_KEYS = new Set([
+  "model",
+  "model_slug",
+  "slug",
+  "default_model_slug",
+  "selected_model_slug",
+  "current_model_slug",
+  "effective_model",
+  "effective_model_slug"
+]);
 const PLAN_KEYS = new Set(["plan_type", "plan_name", "account_plan", "subscription_plan", "product_name"]);
 const STATUS_KEYS = new Set(["account_status", "status", "subscription_status"]);
 const LIMIT_KEYS = new Set(["message_cap", "message_limit", "cap", "limit", "max_messages"]);
@@ -27,15 +37,19 @@ export function parseChatGPTResponse(observed: ObservedResponse): ParsedChatGPTR
   const parsed: ParsedChatGPTResponse = {};
   const models = new Set<string>();
 
-  if (observed.requestMeta?.model) {
-    models.add(observed.requestMeta.model);
+  const requestModel = canonicalTrackedModel(observed.requestMeta?.model);
+  if (requestModel) {
+    models.add(requestModel);
   }
 
   if (isJsonLike(observed.contentType) && observed.responseJson != null) {
     const findings = collectFindings(observed.responseJson);
 
     for (const model of findings.models) {
-      models.add(model);
+      const trackedModel = canonicalTrackedModel(model);
+      if (trackedModel) {
+        models.add(trackedModel);
+      }
     }
 
     if (findings.planName || findings.accountStatus) {
@@ -47,7 +61,10 @@ export function parseChatGPTResponse(observed: ObservedResponse): ParsedChatGPTR
     }
 
     if (findings.limits.length > 0) {
-      parsed.limits = findings.limits;
+      parsed.limits = findings.limits.flatMap((limit) => {
+        const model = canonicalTrackedModel(limit.model);
+        return model ? [{ ...limit, model }] : [];
+      });
     }
   }
 
@@ -60,7 +77,7 @@ export function parseChatGPTResponse(observed: ObservedResponse): ParsedChatGPTR
     method: observed.method,
     status: observed.status,
     ok: observed.ok,
-    model: observed.requestMeta?.model ?? firstModelForRequest(models),
+    model: requestModel ?? firstModelForRequest(models),
     type: endpointType,
     source: endpointType === "message" ? "observed" : "official"
   };
@@ -134,7 +151,7 @@ function collectFindings(root: unknown): {
 
     const record = value as Record<string, unknown>;
     const model = pickString(record, MODEL_KEYS);
-    if (model && looksLikeModel(model)) {
+    if (model && isTrackedModel(model)) {
       models.add(model);
     }
 
@@ -166,7 +183,7 @@ function classifyEndpoint(url: string, method: string, requestModel: string | nu
   const path = safePath(url).toLowerCase();
   const normalizedMethod = method.toUpperCase();
 
-  if ((path.includes("conversation") || path.includes("completion")) && normalizedMethod === "POST" && requestModel) {
+  if ((path.includes("conversation") || path.includes("completion")) && normalizedMethod === "POST") {
     return "message";
   }
   if (path.includes("conversation") || path.includes("completion")) {
@@ -309,6 +326,5 @@ function extractModelFromText(text: string): string | null {
 }
 
 function looksLikeModel(value: string): boolean {
-  const normalized = value.toLowerCase();
-  return normalized.includes("gpt") || normalized.includes("o1") || normalized.includes("o3") || normalized.includes("o4");
+  return isTrackedModel(value);
 }

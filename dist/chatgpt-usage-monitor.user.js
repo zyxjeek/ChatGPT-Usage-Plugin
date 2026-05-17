@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Usage Monitor
 // @namespace    https://github.com/local/chatgpt-usage-userscript
-// @version      0.1.2
+// @version      0.1.3
 // @description  Show local and officially observed ChatGPT subscription/model usage metadata without storing conversation content.
 // @author       local
 // @match        https://chatgpt.com/*
@@ -17,13 +17,35 @@
 // ==/UserScript==
 
 (function() {
+	//#region src/models/trackedModels.ts
+	var TRACKED_MODELS = ["gpt-5.5", "gpt-5.5 thinking"];
+	function canonicalTrackedModel(model) {
+		if (!model) return null;
+		const normalized = normalizeModel(model);
+		const hasGpt55 = normalized.includes("gpt-5-5") || normalized.includes("gpt5-5") || normalized.includes("gpt-55");
+		const hasThinking = normalized.includes("thinking") || normalized.includes("reasoning");
+		if (hasGpt55 && hasThinking) return "gpt-5.5 thinking";
+		if (hasGpt55 || normalized === "instant") return "gpt-5.5";
+		return null;
+	}
+	function isTrackedModel(model) {
+		return canonicalTrackedModel(model) !== null;
+	}
+	function normalizeModel(model) {
+		return model.trim().toLowerCase().replace(/[_.\s]+/g, "-");
+	}
+	//#endregion
 	//#region src/parsers/chatgpt.ts
 	var CHATGPT_HOSTS = new Set(["chatgpt.com", "chat.openai.com"]);
 	var MODEL_KEYS = new Set([
 		"model",
 		"model_slug",
 		"slug",
-		"default_model_slug"
+		"default_model_slug",
+		"selected_model_slug",
+		"current_model_slug",
+		"effective_model",
+		"effective_model_slug"
 	]);
 	var PLAN_KEYS = new Set([
 		"plan_type",
@@ -68,16 +90,26 @@
 		const endpointType = classifyEndpoint(observed.url, observed.method, observed.requestMeta?.model ?? null);
 		const parsed = {};
 		const models = /* @__PURE__ */ new Set();
-		if (observed.requestMeta?.model) models.add(observed.requestMeta.model);
+		const requestModel = canonicalTrackedModel(observed.requestMeta?.model);
+		if (requestModel) models.add(requestModel);
 		if (isJsonLike(observed.contentType) && observed.responseJson != null) {
 			const findings = collectFindings(observed.responseJson);
-			for (const model of findings.models) models.add(model);
+			for (const model of findings.models) {
+				const trackedModel = canonicalTrackedModel(model);
+				if (trackedModel) models.add(trackedModel);
+			}
 			if (findings.planName || findings.accountStatus) parsed.plan = {
 				planName: findings.planName ?? null,
 				accountStatus: findings.accountStatus ?? null,
 				source: "official"
 			};
-			if (findings.limits.length > 0) parsed.limits = findings.limits;
+			if (findings.limits.length > 0) parsed.limits = findings.limits.flatMap((limit) => {
+				const model = canonicalTrackedModel(limit.model);
+				return model ? [{
+					...limit,
+					model
+				}] : [];
+			});
 		}
 		if (models.size > 0) parsed.models = Array.from(models).sort();
 		parsed.request = {
@@ -85,7 +117,7 @@
 			method: observed.method,
 			status: observed.status,
 			ok: observed.ok,
-			model: observed.requestMeta?.model ?? firstModelForRequest(models),
+			model: requestModel ?? firstModelForRequest(models),
 			type: endpointType,
 			source: endpointType === "message" ? "observed" : "official"
 		};
@@ -150,7 +182,7 @@
 			}
 			const record = value;
 			const model = pickString(record, MODEL_KEYS);
-			if (model && looksLikeModel(model)) models.add(model);
+			if (model && isTrackedModel(model)) models.add(model);
 			planName ??= pickString(record, PLAN_KEYS);
 			accountStatus ??= pickString(record, STATUS_KEYS);
 			const limit = pickNumber(record, LIMIT_KEYS);
@@ -175,7 +207,7 @@
 	function classifyEndpoint(url, method, requestModel) {
 		const path = safePath(url).toLowerCase();
 		const normalizedMethod = method.toUpperCase();
-		if ((path.includes("conversation") || path.includes("completion")) && normalizedMethod === "POST" && requestModel) return "message";
+		if ((path.includes("conversation") || path.includes("completion")) && normalizedMethod === "POST") return "message";
 		if (path.includes("conversation") || path.includes("completion")) return "conversation";
 		if (path.includes("models")) return "models";
 		if (path.includes("limit") || path.includes("cap")) return "limits";
@@ -260,10 +292,6 @@
 		const match = /(?:model|model_slug)=([^&]+)/i.exec(text);
 		return match ? decodeURIComponent(match[1].replace(/\+/g, " ")) : null;
 	}
-	function looksLikeModel(value) {
-		const normalized = value.toLowerCase();
-		return normalized.includes("gpt") || normalized.includes("o1") || normalized.includes("o3") || normalized.includes("o4");
-	}
 	//#endregion
 	//#region src/network/interceptor.ts
 	function installInterceptors(options) {
@@ -280,13 +308,13 @@
 		targetWindow.fetch = async (input, init) => {
 			const url = getFetchUrl(input);
 			const method = getFetchMethod(input, init);
-			const requestMeta = extractRequestMeta(init?.body ?? null);
+			const requestMetaPromise = extractFetchRequestMeta(input, init, targetWindow);
 			const response = await originalFetch.call(targetWindow, input, init);
 			if (isChatGPTSameOrigin(url)) observeResponse({
 				url,
 				method,
 				response,
-				requestMeta,
+				requestMeta: await requestMetaPromise,
 				options
 			});
 			return response;
@@ -388,6 +416,31 @@
 		if (init?.method) return init.method.toUpperCase();
 		if (input instanceof Request) return input.method.toUpperCase();
 		return "GET";
+	}
+	async function extractFetchRequestMeta(input, init, targetWindow) {
+		const initMeta = extractRequestMeta(init?.body ?? null) ?? {
+			bodyKind: "none",
+			model: null
+		};
+		if (initMeta.model) return initMeta;
+		if (!isRequestLike(input, targetWindow)) return initMeta;
+		try {
+			const clone = input.clone();
+			const contentType = clone.headers.get("content-type") ?? "";
+			const meta = extractRequestMeta(await clone.text()) ?? {
+				bodyKind: "unknown",
+				model: null
+			};
+			return {
+				...meta,
+				bodyKind: contentType.includes("json") ? "json" : meta.bodyKind
+			};
+		} catch {
+			return initMeta;
+		}
+	}
+	function isRequestLike(input, targetWindow) {
+		return typeof targetWindow.Request === "function" && input instanceof targetWindow.Request;
 	}
 	function getPatchWindow() {
 		if (typeof unsafeWindow !== "undefined" && typeof unsafeWindow.fetch === "function" && typeof unsafeWindow.XMLHttpRequest === "function") return unsafeWindow;
@@ -591,13 +644,14 @@
 					source: "official",
 					updatedAt: now
 				};
-				for (const model of state.plan.visibleModels) {
-					const key = normalizeModelName(model);
+				for (const model of TRACKED_MODELS) {
+					const key = model;
 					state.usages[key] = applyPlanLimit(state.usages[key] ?? createUsage(key, now, state.plan.planName), now, state.plan.planName);
 				}
 			}
 			for (const limit of parsed.limits ?? []) {
 				const key = normalizeModelName(limit.model);
+				if (!key) continue;
 				const withPlanLimit = applyPlanLimit(state.usages[key] ?? createUsage(key, now, state.plan?.planName), now, state.plan?.planName);
 				state.usages[key] = {
 					...withPlanLimit,
@@ -616,7 +670,7 @@
 					method: parsed.request.method,
 					status: parsed.request.status,
 					ok: parsed.request.ok,
-					model: parsed.request.model ? normalizeModelName(parsed.request.model) : null,
+					model: normalizeModelName(parsed.request.model),
 					type: parsed.request.type,
 					source: parsed.request.source ?? "observed"
 				};
@@ -651,10 +705,11 @@
 		}
 	};
 	function normalizeState(input) {
-		const usages = Object.fromEntries(Object.entries(input.usages ?? {}).map(([key, usage]) => [key, {
+		const usages = Object.fromEntries(Object.entries(input.usages ?? {}).map(([key, usage]) => [normalizeModelName(key), {
 			...usage,
+			model: normalizeModelName(usage.model) ?? usage.model,
 			limitLabel: usage.limitLabel ?? "本地日"
-		}]));
+		}]).filter(([key]) => Boolean(key)));
 		return {
 			version: 1,
 			plan: input.plan ?? null,
@@ -719,7 +774,7 @@
 		return Math.floor(timestamp / windowMs) * windowMs;
 	}
 	function normalizeModelName(model) {
-		return model.trim().toLowerCase();
+		return canonicalTrackedModel(model);
 	}
 	function dedupe(values) {
 		return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort();

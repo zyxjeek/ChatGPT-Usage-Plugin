@@ -1,5 +1,6 @@
 import type { ModelUsage, ParsedChatGPTResponse, RequestRecord, UISettings, UsageState } from "../types";
 import { findOfficialLimit } from "../data/officialLimits";
+import { TRACKED_MODELS, canonicalTrackedModel } from "../models/trackedModels";
 
 const STORE_KEY = "chatgpt-usage-monitor-state";
 const MAX_RECENT = 25;
@@ -123,14 +124,17 @@ export class UsageStore extends EventTarget {
         updatedAt: now
       };
 
-      for (const model of state.plan.visibleModels) {
-        const key = normalizeModelName(model);
+      for (const model of TRACKED_MODELS) {
+        const key = model;
         state.usages[key] = applyPlanLimit(state.usages[key] ?? createUsage(key, now, state.plan.planName), now, state.plan.planName);
       }
     }
 
     for (const limit of parsed.limits ?? []) {
       const key = normalizeModelName(limit.model);
+      if (!key) {
+        continue;
+      }
       const existing = state.usages[key] ?? createUsage(key, now, state.plan?.planName);
       const withPlanLimit = applyPlanLimit(existing, now, state.plan?.planName);
       state.usages[key] = {
@@ -151,7 +155,7 @@ export class UsageStore extends EventTarget {
         method: parsed.request.method,
         status: parsed.request.status,
         ok: parsed.request.ok,
-        model: parsed.request.model ? normalizeModelName(parsed.request.model) : null,
+        model: normalizeModelName(parsed.request.model),
         type: parsed.request.type,
         source: parsed.request.source ?? "observed"
       };
@@ -203,12 +207,13 @@ export class UsageStore extends EventTarget {
 function normalizeState(input: UsageState): UsageState {
   const usages = Object.fromEntries(
     Object.entries(input.usages ?? {}).map(([key, usage]) => [
-      key,
+      normalizeModelName(key),
       {
         ...usage,
+        model: normalizeModelName(usage.model) ?? usage.model,
         limitLabel: usage.limitLabel ?? "本地日"
       }
-    ])
+    ]).filter(([key]) => Boolean(key))
   );
 
   return {
@@ -285,8 +290,8 @@ function alignRollingWindow(timestamp: number, windowMs: number): number {
   return Math.floor(timestamp / windowMs) * windowMs;
 }
 
-function normalizeModelName(model: string): string {
-  return model.trim().toLowerCase();
+function normalizeModelName(model: string | null | undefined): string | null {
+  return canonicalTrackedModel(model);
 }
 
 function dedupe(values: string[]): string[] {
