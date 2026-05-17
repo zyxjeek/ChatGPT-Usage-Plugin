@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 const userscriptHeader = `// ==UserScript==
 // @name         ChatGPT Usage Monitor
 // @namespace    https://github.com/local/chatgpt-usage-userscript
-// @version      0.1.4
+// @version      0.1.5
 // @description  Show local and officially observed ChatGPT subscription/model usage metadata without storing conversation content.
 // @author       local
 // @match        https://chatgpt.com/*

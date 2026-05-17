@@ -56,6 +56,7 @@ export interface UsageState {
   plan: PlanInfo | null;
   usages: Record<string, ModelUsage>;
   recent: RequestRecord[];
+  countedEvents: Record<string, number>;
   settings: UISettings;
   lastUpdatedAt: number;
 }
@@ -72,6 +73,7 @@ export interface ParsedChatGPTResponse {
   request?: Omit<RequestRecord, "id" | "timestamp" | "source"> & {
     timestamp?: number;
     source?: SourceKind;
+    eventKey?: string | null;
   };
 }
 
@@ -86,5 +88,6 @@ export interface ObservedResponse {
     model?: string | null;
     bodyKind?: "json" | "form" | "unknown" | "none";
     isUserMessage?: boolean;
+    eventKey?: string | null;
   };
 }

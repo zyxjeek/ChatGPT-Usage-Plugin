@@ -79,7 +79,8 @@ export function parseChatGPTResponse(observed: ObservedResponse): ParsedChatGPTR
     ok: observed.ok,
     model: requestModel ?? firstModelForRequest(models),
     type: endpointType,
-    source: endpointType === "message" ? "observed" : "official"
+    source: endpointType === "message" ? "observed" : "official",
+    eventKey: observed.requestMeta?.eventKey ?? null
   };
 
   return hasUsefulData(parsed) ? parsed : null;
@@ -102,7 +103,8 @@ export function extractRequestMeta(body: unknown): ObservedResponse["requestMeta
         return {
           bodyKind: "json",
           model: findModelValue(json),
-          isUserMessage: hasUserMessageIntent(json)
+          isUserMessage: hasUserMessageIntent(json),
+          eventKey: findEventKey(json)
         };
       } catch {
         return { bodyKind: "unknown", model: null };
@@ -364,6 +366,42 @@ function containsUserMessage(root: unknown): boolean {
   }
 
   return visit(root);
+}
+
+function findEventKey(root: unknown): string | null {
+  if (root == null || typeof root !== "object") {
+    return null;
+  }
+
+  const record = root as Record<string, unknown>;
+  const candidates = [
+    record.message_id,
+    record.parent_message_id,
+    record.conversation_id,
+    record.client_message_id,
+    record.request_id
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  const messages = record.messages;
+  if (Array.isArray(messages)) {
+    for (const message of messages) {
+      if (message && typeof message === "object") {
+        const messageRecord = message as Record<string, unknown>;
+        const id = messageRecord.id ?? messageRecord.message_id;
+        if (typeof id === "string" && id.trim()) {
+          return id.trim();
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 function extractModelFromText(text: string): string | null {

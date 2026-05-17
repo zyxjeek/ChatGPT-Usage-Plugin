@@ -5,6 +5,8 @@ import { TRACKED_MODELS, canonicalTrackedModel } from "../models/trackedModels";
 const STORE_KEY = "chatgpt-usage-monitor-state";
 const MAX_RECENT = 25;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MESSAGE_DEDUPE_MS = 15_000;
+const EVENT_RETENTION_MS = 60 * 60 * 1000;
 
 const defaultSettings: UISettings = {
   expanded: false,
@@ -18,6 +20,7 @@ export function createEmptyState(): UsageState {
     plan: null,
     usages: {},
     recent: [],
+    countedEvents: {},
     settings: { ...defaultSettings },
     lastUpdatedAt: Date.now()
   };
@@ -159,10 +162,18 @@ export class UsageStore extends EventTarget {
         type: parsed.request.type,
         source: parsed.request.source ?? "observed"
       };
+      pruneCountedEvents(state, request.timestamp);
 
       state.recent = [request, ...state.recent].slice(0, MAX_RECENT);
 
       if (request.type === "message" && request.ok && request.model) {
+        const eventKey = parsed.request.eventKey ?? buildFallbackEventKey(request);
+        if (hasCountedMessage(state, eventKey, request)) {
+          state.lastUpdatedAt = now;
+          await this.persist(state);
+          return state;
+        }
+
         const usage = rolloverIfNeeded(
           state.usages[request.model] ?? createUsage(request.model, request.timestamp, state.plan?.planName),
           request.timestamp,
@@ -177,6 +188,7 @@ export class UsageStore extends EventTarget {
         }
 
         state.usages[request.model] = usage;
+        state.countedEvents[eventKey] = request.timestamp;
       }
     }
 
@@ -221,6 +233,7 @@ function normalizeState(input: UsageState): UsageState {
     plan: input.plan ?? null,
     usages,
     recent: Array.isArray(input.recent) ? input.recent.slice(0, MAX_RECENT) : [],
+    countedEvents: input.countedEvents ?? {},
     settings: { ...defaultSettings, ...(input.settings ?? {}) },
     lastUpdatedAt: input.lastUpdatedAt || Date.now()
   };
@@ -257,6 +270,31 @@ function rolloverIfNeeded(usage: ModelUsage, now: number, planName?: string | nu
     limitLabel: fresh.limitLabel ?? usage.limitLabel,
     source: usage.source
   };
+}
+
+function hasCountedMessage(state: UsageState, eventKey: string, request: RequestRecord): boolean {
+  if (state.countedEvents[eventKey]) {
+    return true;
+  }
+
+  return Object.entries(state.countedEvents).some(([key, timestamp]) => {
+    if (!key.startsWith(`recent:${request.model}:`)) {
+      return false;
+    }
+
+    return Math.abs(request.timestamp - timestamp) <= MESSAGE_DEDUPE_MS;
+  });
+}
+
+function buildFallbackEventKey(request: RequestRecord): string {
+  const bucket = Math.floor(request.timestamp / MESSAGE_DEDUPE_MS);
+  return `recent:${request.model}:${bucket}`;
+}
+
+function pruneCountedEvents(state: UsageState, now: number): void {
+  state.countedEvents = Object.fromEntries(
+    Object.entries(state.countedEvents ?? {}).filter(([, timestamp]) => now - timestamp <= EVENT_RETENTION_MS)
+  );
 }
 
 function applyPlanLimit(usage: ModelUsage, now: number, planName?: string | null): ModelUsage {

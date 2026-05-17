@@ -38,6 +38,48 @@ describe("usage store", () => {
     expect(state.recent).toHaveLength(1);
   });
 
+  it("deduplicates repeated observations for the same message event", async () => {
+    const store = new UsageStore(new MemoryStorage());
+    const request = {
+      endpoint: "/backend-api/conversation",
+      method: "POST",
+      status: 200,
+      ok: true,
+      model: "GPT-5.5",
+      type: "message" as const,
+      source: "observed" as const,
+      eventKey: "msg-123"
+    };
+
+    await store.applyParsed({ request });
+    await store.applyParsed({ request });
+    await store.applyParsed({ request });
+
+    const state = await store.getState();
+    expect(state.usages["gpt-5.5"].used).toBe(1);
+    expect(state.recent).toHaveLength(3);
+  });
+
+  it("deduplicates repeated message observations in a short time window without event ids", async () => {
+    const store = new UsageStore(new MemoryStorage());
+    const base = {
+      endpoint: "/backend-api/conversation",
+      method: "POST",
+      status: 200,
+      ok: true,
+      model: "GPT-5.5",
+      type: "message" as const,
+      source: "observed" as const
+    };
+
+    await store.applyParsed({ request: { ...base, timestamp: 1_000_000 } });
+    await store.applyParsed({ request: { ...base, timestamp: 1_004_000 } });
+    await store.applyParsed({ request: { ...base, timestamp: 1_008_000 } });
+
+    const state = await store.getState();
+    expect(state.usages["gpt-5.5"].used).toBe(1);
+  });
+
   it("ignores non-main models", async () => {
     const store = new UsageStore(new MemoryStorage());
 

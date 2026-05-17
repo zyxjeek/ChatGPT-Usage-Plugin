@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Usage Monitor
 // @namespace    https://github.com/local/chatgpt-usage-userscript
-// @version      0.1.4
+// @version      0.1.5
 // @description  Show local and officially observed ChatGPT subscription/model usage metadata without storing conversation content.
 // @author       local
 // @match        https://chatgpt.com/*
@@ -119,7 +119,8 @@
 			ok: observed.ok,
 			model: requestModel ?? firstModelForRequest(models),
 			type: endpointType,
-			source: endpointType === "message" ? "observed" : "official"
+			source: endpointType === "message" ? "observed" : "official",
+			eventKey: observed.requestMeta?.eventKey ?? null
 		};
 		return hasUsefulData(parsed) ? parsed : null;
 	}
@@ -139,7 +140,8 @@
 				return {
 					bodyKind: "json",
 					model: findModelValue(json),
-					isUserMessage: hasUserMessageIntent(json)
+					isUserMessage: hasUserMessageIntent(json),
+					eventKey: findEventKey(json)
 				};
 			} catch {
 				return {
@@ -309,6 +311,27 @@
 			return Object.values(record).some((child) => visit(child));
 		}
 		return visit(root);
+	}
+	function findEventKey(root) {
+		if (root == null || typeof root !== "object") return null;
+		const record = root;
+		const candidates = [
+			record.message_id,
+			record.parent_message_id,
+			record.conversation_id,
+			record.client_message_id,
+			record.request_id
+		];
+		for (const candidate of candidates) if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+		const messages = record.messages;
+		if (Array.isArray(messages)) {
+			for (const message of messages) if (message && typeof message === "object") {
+				const messageRecord = message;
+				const id = messageRecord.id ?? messageRecord.message_id;
+				if (typeof id === "string" && id.trim()) return id.trim();
+			}
+		}
+		return null;
 	}
 	function extractModelFromText(text) {
 		const match = /(?:model|model_slug)=([^&]+)/i.exec(text);
@@ -578,6 +601,8 @@
 	var STORE_KEY = "chatgpt-usage-monitor-state";
 	var MAX_RECENT = 25;
 	var DAY_MS = 1440 * 60 * 1e3;
+	var MESSAGE_DEDUPE_MS = 15e3;
+	var EVENT_RETENTION_MS = 3600 * 1e3;
 	var defaultSettings = {
 		expanded: false,
 		pinned: false,
@@ -589,6 +614,7 @@
 			plan: null,
 			usages: {},
 			recent: [],
+			countedEvents: {},
 			settings: { ...defaultSettings },
 			lastUpdatedAt: Date.now()
 		};
@@ -696,14 +722,22 @@
 					type: parsed.request.type,
 					source: parsed.request.source ?? "observed"
 				};
+				pruneCountedEvents(state, request.timestamp);
 				state.recent = [request, ...state.recent].slice(0, MAX_RECENT);
 				if (request.type === "message" && request.ok && request.model) {
+					const eventKey = parsed.request.eventKey ?? buildFallbackEventKey(request);
+					if (hasCountedMessage(state, eventKey, request)) {
+						state.lastUpdatedAt = now;
+						await this.persist(state);
+						return state;
+					}
 					const usage = rolloverIfNeeded(state.usages[request.model] ?? createUsage(request.model, request.timestamp, state.plan?.planName), request.timestamp, state.plan?.planName);
 					usage.used += 1;
 					usage.lastUsedAt = request.timestamp;
 					usage.source = usage.source === "official" ? "official" : "observed";
 					if (usage.remaining !== null && usage.remaining > 0) usage.remaining -= 1;
 					state.usages[request.model] = usage;
+					state.countedEvents[eventKey] = request.timestamp;
 				}
 			}
 			state.lastUpdatedAt = now;
@@ -737,6 +771,7 @@
 			plan: input.plan ?? null,
 			usages,
 			recent: Array.isArray(input.recent) ? input.recent.slice(0, MAX_RECENT) : [],
+			countedEvents: input.countedEvents ?? {},
 			settings: {
 				...defaultSettings,
 				...input.settings ?? {}
@@ -770,6 +805,20 @@
 			limitLabel: fresh.limitLabel ?? usage.limitLabel,
 			source: usage.source
 		};
+	}
+	function hasCountedMessage(state, eventKey, request) {
+		if (state.countedEvents[eventKey]) return true;
+		return Object.entries(state.countedEvents).some(([key, timestamp]) => {
+			if (!key.startsWith(`recent:${request.model}:`)) return false;
+			return Math.abs(request.timestamp - timestamp) <= MESSAGE_DEDUPE_MS;
+		});
+	}
+	function buildFallbackEventKey(request) {
+		const bucket = Math.floor(request.timestamp / MESSAGE_DEDUPE_MS);
+		return `recent:${request.model}:${bucket}`;
+	}
+	function pruneCountedEvents(state, now) {
+		state.countedEvents = Object.fromEntries(Object.entries(state.countedEvents ?? {}).filter(([, timestamp]) => now - timestamp <= EVENT_RETENTION_MS));
 	}
 	function applyPlanLimit(usage, now, planName) {
 		const officialLimit = findOfficialLimit(usage.model, planName);

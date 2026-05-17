@@ -8,10 +8,10 @@ describe("chatgpt parser", () => {
     const meta = extractRequestMeta(JSON.stringify({
       model: "gpt-5.5",
       action: "next",
-      messages: [{ author: { role: "user" }, content: "private prompt" }]
+      messages: [{ id: "msg-1", author: { role: "user" }, content: "private prompt" }]
     }));
 
-    expect(meta).toEqual({ bodyKind: "json", model: "gpt-5.5", isUserMessage: true });
+    expect(meta).toEqual({ bodyKind: "json", model: "gpt-5.5", isUserMessage: true, eventKey: "msg-1" });
   });
 
   it("parses official plan, models, and limits defensively", () => {
