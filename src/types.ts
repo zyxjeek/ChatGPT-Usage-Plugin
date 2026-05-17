@@ -85,5 +85,6 @@ export interface ObservedResponse {
   requestMeta?: {
     model?: string | null;
     bodyKind?: "json" | "form" | "unknown" | "none";
+    isUserMessage?: boolean;
   };
 }

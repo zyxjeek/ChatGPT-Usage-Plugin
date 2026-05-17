@@ -33,7 +33,7 @@ export function parseChatGPTResponse(observed: ObservedResponse): ParsedChatGPTR
     return null;
   }
 
-  const endpointType = classifyEndpoint(observed.url, observed.method, observed.requestMeta?.model ?? null);
+  const endpointType = classifyEndpoint(observed.url, observed.method, Boolean(observed.requestMeta?.isUserMessage));
   const parsed: ParsedChatGPTResponse = {};
   const models = new Set<string>();
 
@@ -99,7 +99,11 @@ export function extractRequestMeta(body: unknown): ObservedResponse["requestMeta
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
         const json = JSON.parse(trimmed) as unknown;
-        return { bodyKind: "json", model: findModelValue(json) };
+        return {
+          bodyKind: "json",
+          model: findModelValue(json),
+          isUserMessage: hasUserMessageIntent(json)
+        };
       } catch {
         return { bodyKind: "unknown", model: null };
       }
@@ -179,11 +183,11 @@ function collectFindings(root: unknown): {
   };
 }
 
-function classifyEndpoint(url: string, method: string, requestModel: string | null): RequestRecord["type"] {
+function classifyEndpoint(url: string, method: string, isUserMessage: boolean): RequestRecord["type"] {
   const path = safePath(url).toLowerCase();
   const normalizedMethod = method.toUpperCase();
 
-  if ((path.includes("conversation") || path.includes("completion")) && normalizedMethod === "POST") {
+  if ((path.includes("conversation") || path.includes("completion")) && normalizedMethod === "POST" && isUserMessage) {
     return "message";
   }
   if (path.includes("conversation") || path.includes("completion")) {
@@ -318,6 +322,48 @@ function findModelValue(root: unknown): string | null {
 
   visit(root);
   return found;
+}
+
+function hasUserMessageIntent(root: unknown): boolean {
+  if (root == null || typeof root !== "object") {
+    return false;
+  }
+
+  const record = root as Record<string, unknown>;
+  const action = typeof record.action === "string" ? record.action.toLowerCase() : null;
+  if (action === "next" || action === "variant") {
+    return true;
+  }
+
+  return containsUserMessage(root);
+}
+
+function containsUserMessage(root: unknown): boolean {
+  const seen = new WeakSet<object>();
+
+  function visit(value: unknown): boolean {
+    if (value == null || typeof value !== "object") {
+      return false;
+    }
+
+    if (seen.has(value)) {
+      return false;
+    }
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      return value.some((item) => visit(item));
+    }
+
+    const record = value as Record<string, unknown>;
+    if (record.role === "user" || (record.author && typeof record.author === "object" && (record.author as Record<string, unknown>).role === "user")) {
+      return true;
+    }
+
+    return Object.values(record).some((child) => visit(child));
+  }
+
+  return visit(root);
 }
 
 function extractModelFromText(text: string): string | null {

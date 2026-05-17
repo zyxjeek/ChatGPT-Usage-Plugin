@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Usage Monitor
 // @namespace    https://github.com/local/chatgpt-usage-userscript
-// @version      0.1.3
+// @version      0.1.4
 // @description  Show local and officially observed ChatGPT subscription/model usage metadata without storing conversation content.
 // @author       local
 // @match        https://chatgpt.com/*
@@ -87,7 +87,7 @@
 	}
 	function parseChatGPTResponse(observed) {
 		if (!isInterestingEndpoint(observed.url) && observed.requestMeta?.model == null) return null;
-		const endpointType = classifyEndpoint(observed.url, observed.method, observed.requestMeta?.model ?? null);
+		const endpointType = classifyEndpoint(observed.url, observed.method, Boolean(observed.requestMeta?.isUserMessage));
 		const parsed = {};
 		const models = /* @__PURE__ */ new Set();
 		const requestModel = canonicalTrackedModel(observed.requestMeta?.model);
@@ -135,9 +135,11 @@
 				model: null
 			};
 			if (trimmed.startsWith("{") || trimmed.startsWith("[")) try {
+				const json = JSON.parse(trimmed);
 				return {
 					bodyKind: "json",
-					model: findModelValue(JSON.parse(trimmed))
+					model: findModelValue(json),
+					isUserMessage: hasUserMessageIntent(json)
 				};
 			} catch {
 				return {
@@ -204,10 +206,10 @@
 			limits
 		};
 	}
-	function classifyEndpoint(url, method, requestModel) {
+	function classifyEndpoint(url, method, isUserMessage) {
 		const path = safePath(url).toLowerCase();
 		const normalizedMethod = method.toUpperCase();
-		if ((path.includes("conversation") || path.includes("completion")) && normalizedMethod === "POST") return "message";
+		if ((path.includes("conversation") || path.includes("completion")) && normalizedMethod === "POST" && isUserMessage) return "message";
 		if (path.includes("conversation") || path.includes("completion")) return "conversation";
 		if (path.includes("models")) return "models";
 		if (path.includes("limit") || path.includes("cap")) return "limits";
@@ -287,6 +289,26 @@
 		}
 		visit(root);
 		return found;
+	}
+	function hasUserMessageIntent(root) {
+		if (root == null || typeof root !== "object") return false;
+		const record = root;
+		const action = typeof record.action === "string" ? record.action.toLowerCase() : null;
+		if (action === "next" || action === "variant") return true;
+		return containsUserMessage(root);
+	}
+	function containsUserMessage(root) {
+		const seen = /* @__PURE__ */ new WeakSet();
+		function visit(value) {
+			if (value == null || typeof value !== "object") return false;
+			if (seen.has(value)) return false;
+			seen.add(value);
+			if (Array.isArray(value)) return value.some((item) => visit(item));
+			const record = value;
+			if (record.role === "user" || record.author && typeof record.author === "object" && record.author.role === "user") return true;
+			return Object.values(record).some((child) => visit(child));
+		}
+		return visit(root);
 	}
 	function extractModelFromText(text) {
 		const match = /(?:model|model_slug)=([^&]+)/i.exec(text);

@@ -6,11 +6,12 @@ vi.stubGlobal("location", new URL("https://chatgpt.com/"));
 describe("chatgpt parser", () => {
   it("extracts model metadata from request bodies without preserving content", () => {
     const meta = extractRequestMeta(JSON.stringify({
-      model: "gpt-4o",
-      messages: [{ content: "private prompt" }]
+      model: "gpt-5.5",
+      action: "next",
+      messages: [{ author: { role: "user" }, content: "private prompt" }]
     }));
 
-    expect(meta).toEqual({ bodyKind: "json", model: "gpt-4o" });
+    expect(meta).toEqual({ bodyKind: "json", model: "gpt-5.5", isUserMessage: true });
   });
 
   it("parses official plan, models, and limits defensively", () => {
@@ -69,6 +70,43 @@ describe("chatgpt parser", () => {
     });
 
     expect(parsed?.request?.type).toBe("conversation");
+    expect(parsed?.request?.model).toBe("gpt-5.5");
+  });
+
+  it("does not classify POST history loads as messages without user-message intent", () => {
+    const parsed = parseChatGPTResponse({
+      url: "https://chatgpt.com/backend-api/conversation/abc123",
+      method: "POST",
+      status: 200,
+      ok: true,
+      contentType: "application/json",
+      requestMeta: { bodyKind: "json", model: "gpt-5.5", isUserMessage: false },
+      responseJson: {
+        mapping: {
+          node: {
+            message: {
+              metadata: { model_slug: "gpt-5.5" }
+            }
+          }
+        }
+      }
+    });
+
+    expect(parsed?.request?.type).toBe("conversation");
+    expect(parsed?.request?.model).toBe("gpt-5.5");
+  });
+
+  it("classifies POST conversations as messages only with user-message intent", () => {
+    const parsed = parseChatGPTResponse({
+      url: "https://chatgpt.com/backend-api/conversation",
+      method: "POST",
+      status: 200,
+      ok: true,
+      contentType: "text/event-stream",
+      requestMeta: { bodyKind: "json", model: "gpt-5.5", isUserMessage: true }
+    });
+
+    expect(parsed?.request?.type).toBe("message");
     expect(parsed?.request?.model).toBe("gpt-5.5");
   });
 });
